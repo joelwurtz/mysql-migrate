@@ -4,6 +4,7 @@ use sqlx::types::Decimal;
 use sqlx::{TypeInfo, Value};
 use std::fmt;
 
+#[derive(Debug)]
 pub(crate) enum MysqlValueDecoded {
     Null,
     Bool(bool),
