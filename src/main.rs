@@ -4,7 +4,7 @@ mod query;
 mod transformer;
 mod value;
 
-use crate::config::Config;
+use crate::config::{Config, CreateConfig, DatabaseConfig};
 use clap::Parser;
 use sqlx::Row;
 use sqlx::mysql::{MySqlConnectOptions, MySqlPoolOptions};
@@ -49,6 +49,18 @@ async fn main() {
             return;
         }
     };
+
+    // get source database charset
+    // SELECT default_character_set_name FROM information_schema.SCHEMATA
+    // WHERE schema_name = "mydatabasename";
+    let charset_query = "SELECT default_character_set_name FROM information_schema.SCHEMATA WHERE schema_name = DATABASE()";
+    let charset_row = sqlx::query(charset_query)
+        .fetch_one(source_pool.as_ref())
+        .await
+        .unwrap();
+    let charset = charset_row.get::<&str, usize>(0).to_string();
+
+    prepare_target_database(&config.target, &config.create, charset).await;
 
     let target_pool = match MySqlPoolOptions::new()
         .max_connections(config.target.max_connections)
@@ -117,4 +129,63 @@ async fn main() {
     for handle in handles {
         handle.await.unwrap();
     }
+}
+
+async fn prepare_target_database(target: &DatabaseConfig, create: &CreateConfig, charset: String) {
+    let mut target_connect_options = MySqlConnectOptions::from_str(target.dsn.as_str())
+        .unwrap()
+        .disable_statement_logging();
+
+    let database_name = target_connect_options.get_database().unwrap().to_string();
+    target_connect_options = target_connect_options.database("");
+
+    let target_pool = match MySqlPoolOptions::new()
+        .acquire_timeout(Duration::from_secs(600))
+        .connect_with(target_connect_options)
+        .await
+    {
+        Ok(pool) => Arc::new(pool),
+        Err(e) => {
+            tracing::error!("failed to connect to target database for prepare: {}", e);
+
+            return;
+        }
+    };
+
+    if create.drop_if_exists {
+        let drop_query = format!("DROP DATABASE IF EXISTS `{}`", database_name);
+        sqlx::query(&drop_query)
+            .execute(target_pool.as_ref())
+            .await
+            .unwrap();
+    } else {
+        // check if database exists and return if it does
+        let check_query = format!(
+            "SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = '{}'",
+            database_name
+        );
+
+        let exists_row = sqlx::query(&check_query)
+            .fetch_optional(target_pool.as_ref())
+            .await
+            .unwrap();
+
+        if exists_row.is_some() {
+            tracing::info!(
+                "database {} already exists, skipping creation",
+                database_name
+            );
+            return;
+        }
+    }
+
+    let create_query = format!(
+        "CREATE DATABASE `{}` DEFAULT CHARACTER SET {}",
+        database_name, charset
+    );
+
+    sqlx::query(&create_query)
+        .execute(target_pool.as_ref())
+        .await
+        .unwrap();
 }

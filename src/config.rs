@@ -6,11 +6,17 @@ use std::collections::HashMap;
 pub(crate) struct Config {
     pub(crate) source: DatabaseConfig,
     pub(crate) target: DatabaseConfig,
-    #[serde(default = "default_false")]
-    pub(crate) create_target_database: bool,
+    #[serde(default)]
+    pub(crate) create: CreateConfig,
     #[serde(with = "serde_yaml::with::singleton_map_recursive")]
     #[serde(default)]
     pub(crate) migrate: MigrateConfig,
+}
+
+#[derive(Serialize, Deserialize, Default, Debug, Clone)]
+pub(crate) struct CreateConfig {
+    #[serde(default = "default_false")]
+    pub(crate) drop_if_exists: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
