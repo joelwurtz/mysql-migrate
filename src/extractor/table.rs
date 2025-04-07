@@ -1,7 +1,7 @@
 use crate::config::{MigrateTableConfig};
 use crate::extractor::ExtractorError;
 use futures::TryStreamExt;
-use sqlx::{MySqlPool, QueryBuilder, Row, ValueRef};
+use sqlx::{Acquire, Executor, MySqlPool, QueryBuilder, Row, ValueRef};
 use std::ops::{DerefMut};
 use std::sync::Arc;
 use crate::value::MysqlValueDecoded;
@@ -74,8 +74,9 @@ impl TableExtractor {
             indexed_fields.push(field.to_string());
         }
 
+        // get data
         let select_query = format!("SELECT * FROM `{}`", self.name);
-        let mut select_stream = sqlx::query(select_query.as_str()).fetch(&*self.source_pool);
+        let mut select_stream = self.source_pool.fetch(select_query.as_str());
 
         let batch_size = self.migrate_table_config.batch_size;
         let mut rows = Vec::with_capacity(batch_size);
@@ -119,6 +120,7 @@ impl TableExtractor {
 
 async fn insert_batch(name: &str, conn: &mut sqlx::MySqlConnection, rows: Vec<Vec<MysqlValueDecoded>>) -> Result<(), sqlx::Error> {
     let mut query_builder = QueryBuilder::new(format!("INSERT INTO `{}`", name));
+    let length = rows.len();
 
     query_builder.push_values(rows, |mut b, new_category| {
         for value in new_category {
@@ -128,6 +130,12 @@ async fn insert_batch(name: &str, conn: &mut sqlx::MySqlConnection, rows: Vec<Ve
                 },
                 MysqlValueDecoded::UInt(u) => {
                     b.push_bind(u);
+                },
+                MysqlValueDecoded::Double(f) => {
+                    b.push_bind(f);
+                },
+                MysqlValueDecoded::Decimal(f) => {
+                    b.push_bind(f);
                 },
                 MysqlValueDecoded::String(s) => {
                     b.push_bind(s);
@@ -148,9 +156,11 @@ async fn insert_batch(name: &str, conn: &mut sqlx::MySqlConnection, rows: Vec<Ve
         }
     });
 
-    let query = query_builder.build();
 
-    query.execute(conn).await?;
+    tracing::trace!("[{}] prepare to inserted {} rows", name, length);
+    let query = query_builder.build();
+    let result = query.execute(conn).await?;
+    tracing::trace!("[{}] inserted {} rows", name, result.rows_affected());
 
     Ok(())
 }

@@ -38,6 +38,7 @@ async fn main() {
 
     let source_pool = match MySqlPoolOptions::new()
         .max_connections(config.source.max_connections)
+        .test_before_acquire(true)
         .connect_with(source_connect_options)
         .await
     {
