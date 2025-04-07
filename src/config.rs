@@ -38,8 +38,6 @@ pub(crate) struct MigrateTableConfig {
     #[serde(default = "default_false")]
     pub(crate) skip_data: bool,
     #[serde(default)]
-    pub(crate) outfile: Option<String>,
-    #[serde(default)]
     pub(crate) transformers: HashMap<String, Transformer>,
 }
 
@@ -61,7 +59,6 @@ impl Default for MigrateTableConfig {
             batch_size: default_batch_size(),
             skip_data: default_false(),
             transformers: HashMap::new(),
-            outfile: None,
         }
     }
 }
