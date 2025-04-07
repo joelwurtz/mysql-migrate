@@ -4,15 +4,15 @@ mod query;
 mod transformer;
 mod value;
 
-use clap::{Parser};
+use crate::config::Config;
+use clap::Parser;
+use sqlx::Row;
 use sqlx::mysql::{MySqlConnectOptions, MySqlPoolOptions};
 use sqlx::{ConnectOptions, Executor};
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
-use crate::config::{Config};
-use sqlx::Row;
 use tracing::Level;
 use tracing::log::LevelFilter;
 

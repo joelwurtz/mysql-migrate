@@ -5,7 +5,7 @@ use crate::value::ValueError;
 #[derive(Debug)]
 pub enum ExtractorError {
     Sqlx(sqlx::Error),
-    ValueError(ValueError)
+    ValueError(ValueError),
 }
 
 impl From<sqlx::Error> for ExtractorError {

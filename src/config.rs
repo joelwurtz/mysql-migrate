@@ -1,6 +1,6 @@
+use crate::transformer::Transformer;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use crate::transformer::Transformer;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub(crate) struct Config {

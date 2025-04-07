@@ -1,6 +1,6 @@
+use crate::value::MysqlValueDecoded;
 use serde::{Deserialize, Serialize};
 use serde_yaml::Value;
-use crate::value::MysqlValueDecoded;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "lowercase")]
@@ -14,7 +14,7 @@ impl Transformer {
         match self {
             Transformer::Replace(replacement) => match replacement {
                 Value::Null => MysqlValueDecoded::Null,
-                Value::Bool(replacement) => MysqlValueDecoded::Bool(replacement.clone()),
+                Value::Bool(replacement) => MysqlValueDecoded::Bool(*replacement),
                 Value::Number(replacement) => MysqlValueDecoded::Int(replacement.as_i64().unwrap()),
                 Value::String(replacement) => MysqlValueDecoded::String(replacement.clone()),
                 // @TODO to json

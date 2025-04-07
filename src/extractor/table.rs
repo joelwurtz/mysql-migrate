@@ -1,10 +1,10 @@
-use crate::config::{MigrateTableConfig};
+use crate::config::MigrateTableConfig;
 use crate::extractor::ExtractorError;
-use futures::TryStreamExt;
-use sqlx::{Acquire, Executor, MySqlPool, QueryBuilder, Row, ValueRef};
-use std::ops::{DerefMut};
-use std::sync::Arc;
 use crate::value::MysqlValueDecoded;
+use futures::TryStreamExt;
+use sqlx::{Executor, MySqlPool, QueryBuilder, Row, ValueRef};
+use std::ops::DerefMut;
+use std::sync::Arc;
 
 const SELECT_COLUMNS_FOR_INSERT: &str = "SELECT `COLUMN_NAME` AS `Field`, `COLUMN_TYPE` AS `Type`, `IS_NULLABLE` AS `Null`, `COLUMN_KEY` AS `Key`, `COLUMN_DEFAULT` AS `Default`, `EXTRA` AS `Extra`, `COLUMN_COMMENT` AS `Comment` FROM `INFORMATION_SCHEMA`.`COLUMNS` WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?";
 
@@ -88,14 +88,10 @@ impl TableExtractor {
                 let value = ValueRef::to_owned(&row.try_get_raw(i)?);
                 let mut decoded = MysqlValueDecoded::try_from(value)?;
 
-                match indexed_fields.get(i) {
-                    Some(field) => match self.migrate_table_config.transformers.get(field) {
-                        Some(transformer) => {
-                            decoded = transformer.transform(decoded);
-                        },
-                        None => (),
-                    },
-                    None => (),
+                if let Some(field) = indexed_fields.get(i) {
+                    if let Some(transformer) = self.migrate_table_config.transformers.get(field) {
+                        decoded = transformer.transform(decoded);
+                    }
                 }
 
                 values.push(decoded);
@@ -110,7 +106,7 @@ impl TableExtractor {
             }
         }
 
-        if rows.len() > 0 {
+        if !rows.is_empty() {
             insert_batch(self.name.as_str(), conn.deref_mut(), rows).await?;
         }
 
@@ -118,7 +114,11 @@ impl TableExtractor {
     }
 }
 
-async fn insert_batch(name: &str, conn: &mut sqlx::MySqlConnection, rows: Vec<Vec<MysqlValueDecoded>>) -> Result<(), sqlx::Error> {
+async fn insert_batch(
+    name: &str,
+    conn: &mut sqlx::MySqlConnection,
+    rows: Vec<Vec<MysqlValueDecoded>>,
+) -> Result<(), sqlx::Error> {
     let mut query_builder = QueryBuilder::new(format!("INSERT INTO `{}`", name));
     let length = rows.len();
 
@@ -127,35 +127,34 @@ async fn insert_batch(name: &str, conn: &mut sqlx::MySqlConnection, rows: Vec<Ve
             match value {
                 MysqlValueDecoded::Int(i) => {
                     b.push_bind(i);
-                },
+                }
                 MysqlValueDecoded::UInt(u) => {
                     b.push_bind(u);
-                },
+                }
                 MysqlValueDecoded::Double(f) => {
                     b.push_bind(f);
-                },
+                }
                 MysqlValueDecoded::Decimal(f) => {
                     b.push_bind(f);
-                },
+                }
                 MysqlValueDecoded::String(s) => {
                     b.push_bind(s);
-                },
+                }
                 MysqlValueDecoded::DateTime(dt) => {
                     b.push_bind(dt);
-                },
+                }
                 MysqlValueDecoded::Bytes(bytes) => {
                     b.push_bind(bytes);
-                },
+                }
                 MysqlValueDecoded::Null => {
                     b.push_bind(None::<i32>);
-                },
+                }
                 MysqlValueDecoded::Bool(bool) => {
                     b.push_bind(bool);
-                },
+                }
             }
         }
     });
-
 
     tracing::trace!("[{}] prepare to inserted {} rows", name, length);
     let query = query_builder.build();
@@ -164,4 +163,3 @@ async fn insert_batch(name: &str, conn: &mut sqlx::MySqlConnection, rows: Vec<Ve
 
     Ok(())
 }
-

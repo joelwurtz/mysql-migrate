@@ -1,8 +1,8 @@
-use std::fmt;
 use chrono::Utc;
 use sqlx::mysql::MySqlValue;
-use sqlx::{TypeInfo, Value};
 use sqlx::types::Decimal;
+use sqlx::{TypeInfo, Value};
+use std::fmt;
 
 pub(crate) enum MysqlValueDecoded {
     Null,
@@ -57,7 +57,9 @@ impl TryFrom<MySqlValue> for MysqlValueDecoded {
             "VARCHAR" | "TEXT" | "CHAR" => MysqlValueDecoded::String(value.try_decode::<String>()?),
             "DECIMAL" => MysqlValueDecoded::Decimal(value.try_decode::<Decimal>()?),
             "INT UNSIGNED" => MysqlValueDecoded::UInt(value.try_decode::<u32>()? as u64),
-            "TIMESTAMP" | "DATETIME" => MysqlValueDecoded::DateTime(value.try_decode::<chrono::DateTime<Utc>>()?),
+            "TIMESTAMP" | "DATETIME" => {
+                MysqlValueDecoded::DateTime(value.try_decode::<chrono::DateTime<Utc>>()?)
+            }
             "BLOB" => MysqlValueDecoded::Bytes(value.try_decode::<Vec<u8>>()?),
             "ENUM" => MysqlValueDecoded::String(value.try_decode::<String>()?),
             name => Err(ValueError::InvalidType(name.to_string()))?,
