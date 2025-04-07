@@ -1,13 +1,13 @@
 use crate::value::MysqlValueDecoded;
+use json_patch::{Patch, patch as json_patch};
 use serde::{Deserialize, Serialize};
-use serde_json::Value as JsonValue;
 use serde_yaml::Value;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum Transformer {
     Replace(Value),
-    JsonMerge(String),
+    JsonPatch(Patch),
     Nullify,
 }
 
@@ -26,7 +26,7 @@ impl Transformer {
                 Value::Tagged(_) => MysqlValueDecoded::Null,
             },
             (Transformer::Nullify, _) => MysqlValueDecoded::Null,
-            (Transformer::JsonMerge(json_merge), MysqlValueDecoded::String(json)) => {
+            (Transformer::JsonPatch(patch), MysqlValueDecoded::String(json)) => {
                 // decode json to merge
                 let mut json_value: serde_json::Value = match serde_json::from_str(json.as_str()) {
                     Ok(value) => value,
@@ -36,16 +36,11 @@ impl Transformer {
                     }
                 };
 
-                let merge_value: serde_json::Value = match serde_json::from_str(json_merge.as_str())
-                {
-                    Ok(value) => value,
-                    Err(_) => {
-                        tracing::warn!("failed to decode json {}", json_merge);
-                        return MysqlValueDecoded::String(json);
-                    }
-                };
+                if let Err(e) = json_patch(&mut json_value, patch) {
+                    tracing::warn!("failed to apply json patch {}", e);
 
-                json_patch(&mut json_value, merge_value);
+                    return MysqlValueDecoded::String(json);
+                }
 
                 let json_string = match serde_json::to_string(&json_value) {
                     Ok(value) => value,
@@ -57,7 +52,7 @@ impl Transformer {
 
                 MysqlValueDecoded::String(json_string)
             }
-            (Transformer::JsonMerge(json_merge), MysqlValueDecoded::Bytes(json)) => {
+            (Transformer::JsonPatch(patch), MysqlValueDecoded::Bytes(json)) => {
                 // decode json to merge
                 let mut json_value: serde_json::Value =
                     match serde_json::from_slice(json.as_slice()) {
@@ -68,16 +63,11 @@ impl Transformer {
                         }
                     };
 
-                let merge_value: serde_json::Value = match serde_json::from_str(json_merge.as_str())
-                {
-                    Ok(value) => value,
-                    Err(e) => {
-                        tracing::warn!("failed to decode json {}", e);
-                        return MysqlValueDecoded::Bytes(json);
-                    }
-                };
+                if let Err(e) = json_patch(&mut json_value, patch) {
+                    tracing::warn!("failed to apply json patch {}", e);
 
-                json_patch(&mut json_value, merge_value);
+                    return MysqlValueDecoded::Bytes(json);
+                }
 
                 let json_string = match serde_json::to_vec(&json_value) {
                     Ok(value) => value,
@@ -99,17 +89,5 @@ impl Transformer {
                 value
             }
         }
-    }
-}
-
-fn json_patch(a: &mut JsonValue, b: JsonValue) {
-    match (a, b) {
-        (a @ &mut JsonValue::Object(_), JsonValue::Object(b)) => {
-            let a = a.as_object_mut().unwrap();
-            for (k, v) in b {
-                json_patch(a.entry(k).or_insert(JsonValue::Null), v);
-            }
-        }
-        (a, b) => *a = b,
     }
 }
