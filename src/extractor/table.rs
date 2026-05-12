@@ -2,6 +2,7 @@ use crate::config::MigrateTableConfig;
 use crate::extractor::ExtractorError;
 use crate::value::MysqlValueDecoded;
 use futures::TryStreamExt;
+use indicatif::ProgressBar;
 use sqlx::{Executor, MySqlPool, QueryBuilder, Row, ValueRef};
 use std::ops::DerefMut;
 use std::sync::Arc;
@@ -30,7 +31,7 @@ impl TableExtractor {
         }
     }
 
-    pub async fn extract(&mut self) -> Result<(), ExtractorError> {
+    pub async fn extract(&mut self, progress_bar: ProgressBar) -> Result<(), ExtractorError> {
         // keep same connection to disable key check
         let mut conn = self.target_pool.acquire().await?;
 
@@ -100,14 +101,18 @@ impl TableExtractor {
             rows.push(values);
 
             if rows.len() == batch_size {
+                let length = rows.len();
                 let old_rows = std::mem::replace(&mut rows, Vec::with_capacity(batch_size));
 
                 insert_batch(self.name.as_str(), conn.deref_mut(), old_rows).await?;
+                progress_bar.inc(length as u64);
             }
         }
 
         if !rows.is_empty() {
+            let length = rows.len();
             insert_batch(self.name.as_str(), conn.deref_mut(), rows).await?;
+            progress_bar.inc(length as u64);
         }
 
         Ok(())

@@ -6,6 +6,7 @@ mod value;
 
 use crate::config::{Config, CreateConfig, DatabaseConfig};
 use clap::Parser;
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use sqlx::Row;
 use sqlx::mysql::{MySqlConnectOptions, MySqlPoolOptions};
 use sqlx::{ConnectOptions, Executor};
@@ -23,7 +24,7 @@ pub struct Args {
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt().with_max_level(Level::INFO).init();
+    tracing_subscriber::fmt().with_max_level(Level::ERROR).init();
 
     let args = Args::parse();
     let config: Config =
@@ -92,6 +93,11 @@ async fn main() {
 
     let mut handles = Vec::new();
 
+    let multi_progress = MultiProgress::new();
+    let sty = ProgressStyle::with_template(
+        "[{elapsed_precise}] {bar:40} {eta_precise} {msg} {pos}/{len}",
+    ).unwrap();
+
     for table in tables {
         let name = table.try_get::<&str, usize>(0).unwrap().to_string();
         let migrate_config = config
@@ -102,6 +108,14 @@ async fn main() {
             .unwrap_or_default();
         let source_pool = source_pool.clone();
         let target_pool = target_pool.clone();
+        let count = sqlx::query(&format!("SELECT COUNT(*) FROM `{}`", name))
+            .fetch_one(source_pool.as_ref())
+            .await
+            .unwrap()
+            .get::<i64, usize>(0);
+        let progress_bar = multi_progress.add(ProgressBar::new(count as u64));
+        progress_bar.set_style(sty.clone());
+        progress_bar.set_message(format!("Migrating {}", name));
 
         let handle = tokio::task::spawn(async move {
             tracing::info!("migrating table: {}", name);
@@ -113,7 +127,7 @@ async fn main() {
                 name.clone(),
             );
 
-            match exporter.extract().await {
+            match exporter.extract(progress_bar).await {
                 Ok(_) => {
                     tracing::info!("table backup completed {}", name);
                 }
