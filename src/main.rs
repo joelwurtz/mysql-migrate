@@ -14,8 +14,6 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
-use tracing::Level;
-use tracing::log::LevelFilter;
 
 #[derive(Parser)]
 pub struct Args {
@@ -24,15 +22,13 @@ pub struct Args {
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt().with_max_level(Level::ERROR).init();
-
     let args = Args::parse();
     let config: Config =
         serde_yaml::from_reader(std::fs::File::open(args.config).unwrap()).unwrap();
 
     let source_connect_options = MySqlConnectOptions::from_str(config.source.dsn.as_str())
         .unwrap()
-        .log_statements(LevelFilter::Trace);
+        .disable_statement_logging();
     let target_connect_options = MySqlConnectOptions::from_str(config.target.dsn.as_str())
         .unwrap()
         .disable_statement_logging();
@@ -96,7 +92,8 @@ async fn main() {
     let multi_progress = MultiProgress::new();
     let sty = ProgressStyle::with_template(
         "[{elapsed_precise}] {bar:40} {eta_precise} {msg} {pos}/{len}",
-    ).unwrap();
+    )
+    .unwrap();
 
     for table in tables {
         let name = table.try_get::<&str, usize>(0).unwrap().to_string();
@@ -115,11 +112,8 @@ async fn main() {
             .get::<i64, usize>(0);
         let progress_bar = multi_progress.add(ProgressBar::new(count as u64));
         progress_bar.set_style(sty.clone());
-        progress_bar.set_message(format!("Migrating {}", name));
 
         let handle = tokio::task::spawn(async move {
-            tracing::info!("migrating table: {}", name);
-
             let mut exporter = extractor::TableExtractor::new(
                 source_pool,
                 target_pool,
@@ -127,12 +121,11 @@ async fn main() {
                 name.clone(),
             );
 
-            match exporter.extract(progress_bar).await {
-                Ok(_) => {
-                    tracing::info!("table backup completed {}", name);
-                }
+            match exporter.extract(&progress_bar).await {
+                Ok(_) => (),
                 Err(err) => {
-                    tracing::error!("failed to backup table {}: {:?}", name, err);
+                    progress_bar
+                        .abandon_with_message(format!("table {} backup failed: {:?}", name, err));
                 }
             }
         });

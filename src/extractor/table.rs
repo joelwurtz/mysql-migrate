@@ -31,9 +31,12 @@ impl TableExtractor {
         }
     }
 
-    pub async fn extract(&mut self, progress_bar: ProgressBar) -> Result<(), ExtractorError> {
+    pub async fn extract(&mut self, progress_bar: &ProgressBar) -> Result<(), ExtractorError> {
         // keep same connection to disable key check
+        // first acquire source_conn to ensure slot available to handle table
+        let mut source_conn = self.source_pool.acquire().await?;
         let mut conn = self.target_pool.acquire().await?;
+        progress_bar.set_message(format!("Migrating {}", self.name));
 
         // disable key check
         let disable_key_check_query = "SET FOREIGN_KEY_CHECKS=0";
@@ -48,7 +51,7 @@ impl TableExtractor {
         // write table schema
         let query = format!("SHOW CREATE TABLE `{}`", self.name);
         let create_table_row = sqlx::query(query.as_str())
-            .fetch_one(self.source_pool.as_ref())
+            .fetch_one(source_conn.deref_mut())
             .await?;
 
         let create_table_query = create_table_row.get::<&str, usize>(1);
@@ -67,7 +70,7 @@ impl TableExtractor {
         // fetch columns for table
         let columns_query = sqlx::query(SELECT_COLUMNS_FOR_INSERT)
             .bind(&self.name)
-            .fetch_all(self.source_pool.as_ref())
+            .fetch_all(source_conn.deref_mut())
             .await?;
 
         let mut indexed_fields = Vec::new();
@@ -79,7 +82,7 @@ impl TableExtractor {
 
         // get data
         let select_query = format!("SELECT * FROM `{}`", self.name);
-        let mut select_stream = self.source_pool.fetch(select_query.as_str());
+        let mut select_stream = source_conn.fetch(select_query.as_str());
 
         let batch_size = self.migrate_table_config.batch_size;
         let mut rows = Vec::with_capacity(batch_size);
@@ -114,6 +117,8 @@ impl TableExtractor {
                     if let Err(e) = insert_batch(name.as_str(), conn.deref_mut(), old_rows).await {
                         tracing::error!("Failed to insert batch for table {}: {}", name, e);
                     }
+
+                    drop(conn);
                 });
 
                 progress_bar.inc(length as u64);

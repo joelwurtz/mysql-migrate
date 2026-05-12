@@ -21,6 +21,10 @@ pub(crate) enum MysqlValueDecoded {
 pub enum ValueError {
     InvalidType(String),
     DecodeError(sqlx::Error),
+    DecodeErrorWithType {
+        type_name: String,
+        source: sqlx::Error,
+    },
 }
 
 impl From<sqlx::Error> for ValueError {
@@ -34,6 +38,9 @@ impl fmt::Display for ValueError {
         match self {
             ValueError::InvalidType(name) => write!(f, "Invalid type: {}", name),
             ValueError::DecodeError(err) => write!(f, "Decode error: {}", err),
+            ValueError::DecodeErrorWithType { type_name, source } => {
+                write!(f, "Decode error for type {}: {}", type_name, source)
+            }
         }
     }
 }
@@ -55,7 +62,15 @@ impl TryFrom<MySqlValue> for MysqlValueDecoded {
             "INT" => MysqlValueDecoded::Int(value.try_decode::<i32>()? as i64),
             "BIGINT" => MysqlValueDecoded::Int(value.try_decode::<i64>()?),
             "FLOAT" | "DOUBLE" => MysqlValueDecoded::Double(value.try_decode::<f64>()?),
-            "VARCHAR" | "TEXT" | "CHAR" => MysqlValueDecoded::String(value.try_decode::<String>()?),
+            "TEXT" => MysqlValueDecoded::Bytes(value.try_decode::<Vec<u8>>()?),
+            "VARCHAR" | "CHAR" => {
+                MysqlValueDecoded::String(value.try_decode::<String>().map_err(|e| {
+                    ValueError::DecodeErrorWithType {
+                        type_name: type_info.name().to_string(),
+                        source: e,
+                    }
+                })?)
+            }
             "DECIMAL" => MysqlValueDecoded::Decimal(value.try_decode::<Decimal>()?),
             "INT UNSIGNED" => MysqlValueDecoded::UInt(value.try_decode::<u32>()? as u64),
             "TIMESTAMP" | "DATETIME" => {
