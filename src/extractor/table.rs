@@ -62,6 +62,8 @@ impl TableExtractor {
             return Ok(());
         }
 
+        drop(conn);
+
         // fetch columns for table
         let columns_query = sqlx::query(SELECT_COLUMNS_FOR_INSERT)
             .bind(&self.name)
@@ -104,13 +106,24 @@ impl TableExtractor {
                 let length = rows.len();
                 let old_rows = std::mem::replace(&mut rows, Vec::with_capacity(batch_size));
 
-                insert_batch(self.name.as_str(), conn.deref_mut(), old_rows).await?;
+                // acquire a new connection for batch so we can insert in parallel with fetching data
+                let mut conn = self.target_pool.acquire().await?;
+                let name = self.name.clone();
+
+                tokio::spawn(async move {
+                    if let Err(e) = insert_batch(name.as_str(), conn.deref_mut(), old_rows).await {
+                        tracing::error!("Failed to insert batch for table {}: {}", name, e);
+                    }
+                });
+
                 progress_bar.inc(length as u64);
             }
         }
 
         if !rows.is_empty() {
             let length = rows.len();
+            let mut conn = self.target_pool.acquire().await?;
+
             insert_batch(self.name.as_str(), conn.deref_mut(), rows).await?;
             progress_bar.inc(length as u64);
         }
