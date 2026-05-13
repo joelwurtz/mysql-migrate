@@ -1,6 +1,5 @@
 mod config;
 mod extractor;
-mod query;
 mod transformer;
 mod value;
 
@@ -66,6 +65,7 @@ async fn main() {
             Box::pin(async move {
                 // disable foreign key check
                 conn.execute("SET FOREIGN_KEY_CHECKS=0").await?;
+                conn.execute("SET UNIQUE_CHECKS=0").await?;
 
                 Ok(())
             })

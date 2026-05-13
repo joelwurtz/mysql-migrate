@@ -39,8 +39,15 @@ pub(crate) struct MigrateTableConfig {
     pub(crate) skip_data: bool,
     #[serde(default)]
     pub(crate) transformers: HashMap<String, Transformer>,
+    #[serde(default)]
+    pub(crate) load_strategy: LoadStrategy,
 }
 
+#[derive(Serialize, Deserialize, Debug, Copy, Clone)]
+pub enum LoadStrategy {
+    Insert,
+    LoadData,
+}
 fn default_batch_size() -> usize {
     1000
 }
@@ -59,6 +66,13 @@ impl Default for MigrateTableConfig {
             batch_size: default_batch_size(),
             skip_data: default_false(),
             transformers: HashMap::new(),
+            load_strategy: LoadStrategy::Insert,
         }
+    }
+}
+
+impl Default for LoadStrategy {
+    fn default() -> Self {
+        Self::Insert
     }
 }
