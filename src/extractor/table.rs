@@ -3,7 +3,7 @@ use crate::extractor::ExtractorError;
 use crate::value::MysqlValueDecoded;
 use futures::TryStreamExt;
 use indicatif::ProgressBar;
-use sqlx::{Executor, MySqlPool, QueryBuilder, Row, ValueRef};
+use sqlx::{AssertSqlSafe, Executor, MySqlPool, QueryBuilder, Row, ValueRef};
 use std::io::Write;
 use std::ops::DerefMut;
 use std::sync::Arc;
@@ -47,18 +47,18 @@ impl TableExtractor {
 
         // delete table if exists in target
         let delete_query = format!("DROP TABLE IF EXISTS `{}`", self.name);
-        sqlx::query(&delete_query).execute(conn.deref_mut()).await?;
+        sqlx::query(AssertSqlSafe(delete_query)).execute(conn.deref_mut()).await?;
 
         // write table schema
         progress_bar.set_message(format!("create target table {}", self.name));
         let query = format!("SHOW CREATE TABLE `{}`", self.name);
-        let create_table_row = sqlx::query(query.as_str())
+        let create_table_row = sqlx::query(AssertSqlSafe(query))
             .fetch_one(source_conn.deref_mut())
             .await?;
 
-        let create_table_query = create_table_row.get::<&str, usize>(1);
+        let create_table_query = create_table_row.get::<String, usize>(1);
 
-        let _ = sqlx::query(create_table_query)
+        let _ = sqlx::query(AssertSqlSafe(create_table_query))
             .execute(conn.deref_mut())
             .await?;
 
@@ -85,7 +85,7 @@ impl TableExtractor {
 
         // get data
         let select_query = format!("SELECT * FROM `{}`", self.name);
-        let mut select_stream = source_conn.fetch(select_query.as_str());
+        let mut select_stream = source_conn.fetch(AssertSqlSafe(select_query));
 
         let batch_size = self.migrate_table_config.batch_size;
         let strategy = self.migrate_table_config.load_strategy;
@@ -320,7 +320,7 @@ async fn insert_batch_load_data(
         temp_file_path, name
     );
 
-    let result = sqlx::query(&load_query).execute(conn).await;
+    let result = conn.execute(AssertSqlSafe(load_query)).await;
 
     // Clean up temporary file
     let _ = std::fs::remove_file(&temp_file_path);

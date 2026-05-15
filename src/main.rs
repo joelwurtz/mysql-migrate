@@ -6,7 +6,7 @@ mod value;
 use crate::config::{Config, CreateConfig, DatabaseConfig};
 use clap::Parser;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
-use sqlx::Row;
+use sqlx::{AssertSqlSafe, Row};
 use sqlx::mysql::{MySqlConnectOptions, MySqlPoolOptions};
 use sqlx::{ConnectOptions, Executor};
 use std::path::PathBuf;
@@ -105,7 +105,7 @@ async fn main() {
             .unwrap_or_default();
         let source_pool = source_pool.clone();
         let target_pool = target_pool.clone();
-        let count = sqlx::query(&format!("SELECT COUNT(*) FROM `{}`", name))
+        let count = sqlx::query(AssertSqlSafe(format!("SELECT COUNT(*) FROM `{}`", name)))
             .fetch_one(source_pool.as_ref())
             .await
             .unwrap()
@@ -161,7 +161,7 @@ async fn prepare_target_database(target: &DatabaseConfig, create: &CreateConfig,
 
     if create.drop_if_exists {
         let drop_query = format!("DROP DATABASE IF EXISTS `{}`", database_name);
-        sqlx::query(&drop_query)
+        sqlx::query(AssertSqlSafe(drop_query))
             .execute(target_pool.as_ref())
             .await
             .unwrap();
@@ -172,7 +172,7 @@ async fn prepare_target_database(target: &DatabaseConfig, create: &CreateConfig,
             database_name
         );
 
-        let exists_row = sqlx::query(&check_query)
+        let exists_row = sqlx::query(AssertSqlSafe(check_query))
             .fetch_optional(target_pool.as_ref())
             .await
             .unwrap();
@@ -191,7 +191,7 @@ async fn prepare_target_database(target: &DatabaseConfig, create: &CreateConfig,
         database_name, charset
     );
 
-    sqlx::query(&create_query)
+    sqlx::query(AssertSqlSafe(create_query))
         .execute(target_pool.as_ref())
         .await
         .unwrap();
