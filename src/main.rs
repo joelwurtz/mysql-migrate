@@ -6,17 +6,25 @@ mod value;
 use crate::config::{Config, CreateConfig, DatabaseConfig};
 use clap::Parser;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
-use sqlx::{AssertSqlSafe, Row};
 use sqlx::mysql::{MySqlConnectOptions, MySqlPoolOptions};
+use sqlx::{AssertSqlSafe, Row};
 use sqlx::{ConnectOptions, Executor};
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
+use tracing_indicatif::IndicatifLayer;
+use tracing_subscriber::Layer;
+use tracing_subscriber::filter::LevelFilter;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
 
 #[derive(Parser)]
 pub struct Args {
     config: PathBuf,
+    /// Enable debug logging (shows trace level logs)
+    #[clap(short, long)]
+    debug: bool,
 }
 
 #[tokio::main]
@@ -24,6 +32,24 @@ async fn main() {
     let args = Args::parse();
     let config: Config =
         serde_yaml::from_reader(std::fs::File::open(args.config).unwrap()).unwrap();
+
+    let indicatif_layer = IndicatifLayer::new();
+
+    // Set log level based on debug flag
+    let log_level = if args.debug {
+        LevelFilter::TRACE
+    } else {
+        LevelFilter::ERROR
+    };
+
+    tracing_subscriber::registry()
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_writer(indicatif_layer.get_stderr_writer())
+                .with_filter(log_level),
+        )
+        .with(indicatif_layer)
+        .init();
 
     let source_connect_options = MySqlConnectOptions::from_str(config.source.dsn.as_str())
         .unwrap()
