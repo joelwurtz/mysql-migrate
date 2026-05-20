@@ -47,7 +47,9 @@ impl TableExtractor {
 
         // delete table if exists in target
         let delete_query = format!("DROP TABLE IF EXISTS `{}`", self.name);
-        sqlx::query(AssertSqlSafe(delete_query)).execute(conn.deref_mut()).await?;
+        sqlx::query(AssertSqlSafe(delete_query))
+            .execute(conn.deref_mut())
+            .await?;
 
         // write table schema
         progress_bar.set_message(format!("create target table {}", self.name));
@@ -84,7 +86,11 @@ impl TableExtractor {
         }
 
         // get data
-        let select_query = format!("SELECT * FROM `{}`", self.name);
+        let select_query = self
+            .migrate_table_config
+            .select_query
+            .clone()
+            .unwrap_or_else(|| format!("SELECT * FROM `{}`", self.name));
         let mut select_stream = source_conn.fetch(AssertSqlSafe(select_query));
 
         let batch_size = self.migrate_table_config.batch_size;

@@ -41,6 +41,8 @@ pub(crate) struct MigrateTableConfig {
     pub(crate) transformers: HashMap<String, Transformer>,
     #[serde(default)]
     pub(crate) load_strategy: LoadStrategy,
+    #[serde(default)]
+    pub(crate) select_query: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Copy, Clone)]
@@ -67,6 +69,7 @@ impl Default for MigrateTableConfig {
             skip_data: default_false(),
             transformers: HashMap::new(),
             load_strategy: LoadStrategy::Insert,
+            select_query: None,
         }
     }
 }
