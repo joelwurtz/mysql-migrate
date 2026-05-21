@@ -62,21 +62,15 @@ impl TryFrom<MySqlValue> for MysqlValueDecoded {
             "INT" => MysqlValueDecoded::Int(value.try_decode::<i32>()? as i64),
             "BIGINT" => MysqlValueDecoded::Int(value.try_decode::<i64>()?),
             "FLOAT" | "DOUBLE" => MysqlValueDecoded::Double(value.try_decode::<f64>()?),
-            "TEXT" => MysqlValueDecoded::Bytes(value.try_decode::<Vec<u8>>()?),
-            "VARCHAR" | "CHAR" => {
-                MysqlValueDecoded::String(value.try_decode::<String>().map_err(|e| {
-                    ValueError::DecodeErrorWithType {
-                        type_name: type_info.name().to_string(),
-                        source: e,
-                    }
-                })?)
-            }
+            "TEXT" | "VARCHAR" | "CHAR" | "BLOB" => match value.try_decode::<String>() {
+                Ok(s) => MysqlValueDecoded::String(s),
+                Err(_) => MysqlValueDecoded::Bytes(value.try_decode::<Vec<u8>>()?),
+            },
             "DECIMAL" => MysqlValueDecoded::Decimal(value.try_decode::<Decimal>()?),
             "INT UNSIGNED" => MysqlValueDecoded::UInt(value.try_decode::<u32>()? as u64),
             "TIMESTAMP" | "DATETIME" => {
                 MysqlValueDecoded::DateTime(value.try_decode::<chrono::DateTime<Utc>>()?)
             }
-            "BLOB" => MysqlValueDecoded::Bytes(value.try_decode::<Vec<u8>>()?),
             "ENUM" => MysqlValueDecoded::String(value.try_decode::<String>()?),
             name => Err(ValueError::InvalidType(name.to_string()))?,
         })

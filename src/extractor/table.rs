@@ -284,9 +284,8 @@ async fn insert_batch_load_data(
                         .replace("\t", "\\t")
                         .replace("\n", "\\n")
                         .replace("\r", "\\r");
-                    writer
-                        .write_all(escaped.as_bytes())
-                        .map_err(|e| sqlx::Error::Io(e))?;
+
+                    write!(writer, "{}", escaped).map_err(|e| sqlx::Error::Io(e))?;
                 }
                 MysqlValueDecoded::DateTime(dt) => {
                     write!(writer, "{}", dt).map_err(|e| sqlx::Error::Io(e))?;
