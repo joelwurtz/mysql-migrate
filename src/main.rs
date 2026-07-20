@@ -5,14 +5,16 @@ mod value;
 
 use crate::config::{Config, CreateConfig, DatabaseConfig};
 use clap::Parser;
-use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use indicatif::{FormattedDuration, MultiProgress, ProgressBar, ProgressStyle};
 use sqlx::mysql::{MySqlConnectOptions, MySqlPoolOptions};
 use sqlx::{AssertSqlSafe, Row};
 use sqlx::{ConnectOptions, Executor};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::str::FromStr;
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use tracing_indicatif::IndicatifLayer;
 use tracing_subscriber::Layer;
 use tracing_subscriber::filter::LevelFilter;
@@ -25,6 +27,100 @@ pub struct Args {
     /// Enable debug logging (shows trace level logs)
     #[clap(short, long)]
     debug: bool,
+}
+
+/// Shared view of the migration used to derive the overall remaining time. indicatif alone
+/// cannot do it: the summary bar advances in whole tables, so once only a few large tables
+/// are left its position stalls and the extrapolated ETA explodes.
+struct MigrationProgress {
+    total: usize,
+    completed: AtomicUsize,
+    start: Instant,
+    /// Bars of the tables currently running, keyed by table name.
+    in_flight: Mutex<HashMap<String, ProgressBar>>,
+}
+
+impl MigrationProgress {
+    fn new(total: usize) -> Self {
+        Self {
+            total,
+            completed: AtomicUsize::new(0),
+            start: Instant::now(),
+            in_flight: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Overall remaining time, or None while nothing is measurable yet.
+    ///
+    /// When the running tables are the last ones, the migration ends when the slowest of them
+    /// does, so their largest row-based ETA is the answer. Otherwise each table counts as one
+    /// unit of work (running ones as their completed fraction) and the elapsed time is
+    /// extrapolated linearly, floored by that same largest ETA since the longest running table
+    /// bounds any schedule.
+    fn remaining(&self) -> Option<Duration> {
+        let done = self.completed.load(Ordering::SeqCst);
+        if done >= self.total {
+            return Some(Duration::ZERO);
+        }
+
+        let bars: Vec<ProgressBar> = self.in_flight.lock().unwrap().values().cloned().collect();
+
+        // Tables whose COUNT(*) has not landed yet have no length: their fraction is 0 and
+        // their ETA is meaningless, so they only weigh in as "not started".
+        let longest_eta = bars
+            .iter()
+            .filter(|bar| bar.length().unwrap_or(0) > 0)
+            .map(|bar| bar.eta())
+            .max();
+
+        let queued = self.total.saturating_sub(done + bars.len());
+        if queued == 0
+            && let Some(eta) = longest_eta
+        {
+            return Some(eta);
+        }
+
+        let effective: f64 = done as f64
+            + bars
+                .iter()
+                .map(|bar| {
+                    let len = bar.length().unwrap_or(0);
+                    if len == 0 {
+                        0.0
+                    } else {
+                        // Clamped because indicatif allows the position to run past the length:
+                        // a bar is sized from SELECT COUNT(*) while its rows come from
+                        // select_query, which may well yield more of them.
+                        (bar.position() as f64 / len as f64).min(1.0)
+                    }
+                })
+                .sum::<f64>();
+        if effective < 1e-3 {
+            return None;
+        }
+
+        // Duration::mul_f64 panics on a negative factor, hence the floor at zero.
+        let remaining = self
+            .start
+            .elapsed()
+            .mul_f64(((self.total as f64 - effective) / effective).max(0.0));
+
+        Some(remaining.max(longest_eta.unwrap_or(Duration::ZERO)))
+    }
+}
+
+/// Count a table as done, whether it succeeded or not, and refresh the summary line.
+fn finish_table(summary_bar: &ProgressBar, progress: &MigrationProgress, name: &str) {
+    progress.in_flight.lock().unwrap().remove(name);
+    let done = progress.completed.fetch_add(1, Ordering::SeqCst) + 1;
+
+    summary_bar.set_position(done as u64);
+    summary_bar.set_message(format!(
+        "{} done / {} remaining / {} tables",
+        done,
+        progress.total - done,
+        progress.total
+    ));
 }
 
 #[tokio::main]
@@ -145,6 +241,31 @@ async fn main() {
         config.source.max_connections.max(1) as usize,
     ));
 
+    // Overall progress, kept as the last line so the per table bars stack above it.
+    let total_tables = tables.len();
+    let progress = Arc::new(MigrationProgress::new(total_tables));
+    let summary_bar = multi_progress.add(ProgressBar::new(total_tables as u64));
+    let eta_progress = progress.clone();
+    summary_bar.set_style(
+        ProgressStyle::with_template("[{elapsed_precise}] {bar:40} {smart_eta} left | {msg}")
+            .unwrap()
+            .with_key(
+                "smart_eta",
+                move |_state: &indicatif::ProgressState, writer: &mut dyn std::fmt::Write| {
+                    match eta_progress.remaining() {
+                        Some(eta) => write!(writer, "{}", FormattedDuration(eta)).unwrap(),
+                        None => write!(writer, "-").unwrap(),
+                    }
+                },
+            ),
+    );
+    summary_bar.set_message(format!(
+        "0 done / {} remaining / {} tables",
+        total_tables, total_tables
+    ));
+    summary_bar.enable_steady_tick(Duration::from_millis(500));
+    let summary_bar = Arc::new(summary_bar);
+
     for table in tables {
         let name = table.try_get::<&str, usize>(0).unwrap().to_string();
         let migrate_config = config
@@ -157,14 +278,23 @@ async fn main() {
         let target_pool = target_pool.clone();
         let table_slots = table_slots.clone();
         let multi_progress = multi_progress.clone();
+        let summary_bar = summary_bar.clone();
+        let progress = progress.clone();
         let sty = sty.clone();
 
         let handle = tokio::task::spawn(async move {
             // Held until the table is done, so it covers both the count and the extraction.
             let _slot = table_slots.acquire().await.unwrap();
 
-            let progress_bar = multi_progress.add(ProgressBar::new(0));
+            // The bar only appears once the table actually starts, so queued tables stay off
+            // screen. Inserted one from the back to stay above the summary line.
+            let progress_bar = multi_progress.insert_from_back(1, ProgressBar::new(0));
             progress_bar.set_style(sty);
+            progress
+                .in_flight
+                .lock()
+                .unwrap()
+                .insert(name.clone(), progress_bar.clone());
 
             // Counted here rather than up front: doing it in the loop would need a source
             // connection while every other table is holding one.
@@ -176,6 +306,7 @@ async fn main() {
                 Err(err) => {
                     progress_bar
                         .abandon_with_message(format!("table {} count failed: {}", name, err));
+                    finish_table(&summary_bar, &progress, &name);
 
                     return;
                 }
@@ -196,6 +327,8 @@ async fn main() {
                         .abandon_with_message(format!("table {} backup failed: {}", name, err));
                 }
             }
+
+            finish_table(&summary_bar, &progress, &name);
         });
 
         handles.push(handle);
