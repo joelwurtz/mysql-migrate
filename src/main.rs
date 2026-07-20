@@ -61,6 +61,10 @@ async fn main() {
     let source_pool = match MySqlPoolOptions::new()
         .max_connections(config.source.max_connections)
         .test_before_acquire(true)
+        // sqlx defaults to 30s, which a table queued behind a long running one blows through
+        // easily. Table concurrency is capped to the pool size below, so reaching this timeout
+        // now means something is genuinely stuck rather than merely busy.
+        .acquire_timeout(Duration::from_secs(600))
         .connect_with(source_connect_options)
         .await
     {
@@ -93,6 +97,18 @@ async fn main() {
                 conn.execute("SET FOREIGN_KEY_CHECKS=0").await?;
                 conn.execute("SET UNIQUE_CHECKS=0").await?;
 
+                // We copy data, we do not validate it: the target must accept whatever the
+                // source holds, including values a strict target would reject (zero dates
+                // like '0000-00-00', out of range dates, over long strings). Under
+                // STRICT_TRANS_TABLES such a value is turned into NULL, which then trips
+                // the NOT NULL constraint and fails the whole batch.
+                // NO_AUTO_VALUE_ON_ZERO is kept so an explicit 0 in an AUTO_INCREMENT
+                // column stays 0 instead of being reassigned a fresh id, and
+                // ALLOW_INVALID_DATES keeps dates such as '2024-02-31' as they are.
+                // This mirrors what mysqldump writes at the top of a dump.
+                conn.execute("SET SESSION sql_mode='NO_AUTO_VALUE_ON_ZERO,ALLOW_INVALID_DATES'")
+                    .await?;
+
                 Ok(())
             })
         })
@@ -121,6 +137,14 @@ async fn main() {
     )
     .unwrap();
 
+    // A table holds one source connection for as long as it streams its rows, so running more
+    // tables at once than the source pool has connections means the surplus ones sit in the
+    // acquire queue for the whole duration of the tables ahead of them. Gate the tables here
+    // instead: they queue as tasks, and only start once a connection is actually free.
+    let table_slots = Arc::new(tokio::sync::Semaphore::new(
+        config.source.max_connections.max(1) as usize,
+    ));
+
     for table in tables {
         let name = table.try_get::<&str, usize>(0).unwrap().to_string();
         let migrate_config = config
@@ -131,15 +155,33 @@ async fn main() {
             .unwrap_or_default();
         let source_pool = source_pool.clone();
         let target_pool = target_pool.clone();
-        let count = sqlx::query(AssertSqlSafe(format!("SELECT COUNT(*) FROM `{}`", name)))
-            .fetch_one(source_pool.as_ref())
-            .await
-            .unwrap()
-            .get::<i64, usize>(0);
-        let progress_bar = multi_progress.add(ProgressBar::new(count as u64));
-        progress_bar.set_style(sty.clone());
+        let table_slots = table_slots.clone();
+        let multi_progress = multi_progress.clone();
+        let sty = sty.clone();
 
         let handle = tokio::task::spawn(async move {
+            // Held until the table is done, so it covers both the count and the extraction.
+            let _slot = table_slots.acquire().await.unwrap();
+
+            let progress_bar = multi_progress.add(ProgressBar::new(0));
+            progress_bar.set_style(sty);
+
+            // Counted here rather than up front: doing it in the loop would need a source
+            // connection while every other table is holding one.
+            let count = match sqlx::query(AssertSqlSafe(format!("SELECT COUNT(*) FROM `{}`", name)))
+                .fetch_one(source_pool.as_ref())
+                .await
+            {
+                Ok(row) => row.get::<i64, usize>(0),
+                Err(err) => {
+                    progress_bar
+                        .abandon_with_message(format!("table {} count failed: {}", name, err));
+
+                    return;
+                }
+            };
+            progress_bar.set_length(count as u64);
+
             let mut exporter = extractor::TableExtractor::new(
                 source_pool,
                 target_pool,
@@ -151,7 +193,7 @@ async fn main() {
                 Ok(_) => (),
                 Err(err) => {
                     progress_bar
-                        .abandon_with_message(format!("table {} backup failed: {:?}", name, err));
+                        .abandon_with_message(format!("table {} backup failed: {}", name, err));
                 }
             }
         });
