@@ -1,4 +1,3 @@
-use chrono::Utc;
 use sqlx::mysql::MySqlValue;
 use sqlx::types::Decimal;
 use sqlx::{TypeInfo, Value};
@@ -13,7 +12,7 @@ pub(crate) enum MysqlValueDecoded {
     Double(f64),
     Decimal(Decimal),
     String(String),
-    DateTime(chrono::DateTime<Utc>),
+    DateTime(chrono::NaiveDateTime),
     Bytes(Vec<u8>),
 }
 
@@ -72,8 +71,11 @@ impl TryFrom<MySqlValue> for MysqlValueDecoded {
             "BIGINT UNSIGNED" => MysqlValueDecoded::UInt(value.try_decode::<u64>()?),
             "FLOAT" | "DOUBLE" => MysqlValueDecoded::Double(value.try_decode::<f64>()?),
             "DECIMAL" => MysqlValueDecoded::Decimal(value.try_decode::<Decimal>()?),
+            // NaiveDateTime, not DateTime<Utc>: the latter binds as a TIMESTAMP parameter,
+            // and the server nullifies TIMESTAMP values outside the 1970-2038 epoch range.
+            // Unchecked because NaiveDateTime's checked decode rejects TIMESTAMP columns.
             "TIMESTAMP" | "DATETIME" => {
-                MysqlValueDecoded::DateTime(value.try_decode::<chrono::DateTime<Utc>>()?)
+                MysqlValueDecoded::DateTime(value.try_decode_unchecked::<chrono::NaiveDateTime>()?)
             }
 
             // Binary data, never valid text: go straight to bytes.
