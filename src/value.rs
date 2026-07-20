@@ -19,12 +19,7 @@ pub(crate) enum MysqlValueDecoded {
 
 #[derive(Debug)]
 pub enum ValueError {
-    InvalidType(String),
     DecodeError(sqlx::Error),
-    DecodeErrorWithType {
-        type_name: String,
-        source: sqlx::Error,
-    },
 }
 
 impl From<sqlx::Error> for ValueError {
@@ -36,12 +31,19 @@ impl From<sqlx::Error> for ValueError {
 impl fmt::Display for ValueError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            ValueError::InvalidType(name) => write!(f, "Invalid type: {}", name),
             ValueError::DecodeError(err) => write!(f, "Decode error: {}", err),
-            ValueError::DecodeErrorWithType { type_name, source } => {
-                write!(f, "Decode error for type {}: {}", type_name, source)
-            }
         }
+    }
+}
+
+/// Values are fetched over the MySQL text protocol, so anything can be read back as text.
+/// Fallback to raw bytes when the content is not valid UTF-8.
+fn decode_text_or_bytes(value: &MySqlValue) -> Result<MysqlValueDecoded, ValueError> {
+    match value.try_decode_unchecked::<String>() {
+        Ok(s) => Ok(MysqlValueDecoded::String(s)),
+        Err(_) => Ok(MysqlValueDecoded::Bytes(
+            value.try_decode_unchecked::<Vec<u8>>()?,
+        )),
     }
 }
 
@@ -56,23 +58,38 @@ impl TryFrom<MySqlValue> for MysqlValueDecoded {
         let type_info = value.type_info();
 
         Ok(match type_info.name() {
+            "NULL" => MysqlValueDecoded::Null,
             "BOOLEAN" => MysqlValueDecoded::Bool(value.try_decode::<bool>()?),
             "TINYINT" => MysqlValueDecoded::Int(value.try_decode::<i8>()? as i64),
             "SMALLINT" => MysqlValueDecoded::Int(value.try_decode::<i16>()? as i64),
-            "INT" => MysqlValueDecoded::Int(value.try_decode::<i32>()? as i64),
+            "MEDIUMINT" | "INT" => MysqlValueDecoded::Int(value.try_decode::<i32>()? as i64),
             "BIGINT" => MysqlValueDecoded::Int(value.try_decode::<i64>()?),
+            "TINYINT UNSIGNED" => MysqlValueDecoded::UInt(value.try_decode::<u8>()? as u64),
+            "SMALLINT UNSIGNED" => MysqlValueDecoded::UInt(value.try_decode::<u16>()? as u64),
+            "MEDIUMINT UNSIGNED" | "INT UNSIGNED" => {
+                MysqlValueDecoded::UInt(value.try_decode::<u32>()? as u64)
+            }
+            "BIGINT UNSIGNED" => MysqlValueDecoded::UInt(value.try_decode::<u64>()?),
             "FLOAT" | "DOUBLE" => MysqlValueDecoded::Double(value.try_decode::<f64>()?),
-            "TEXT" | "VARCHAR" | "CHAR" | "BLOB" => match value.try_decode::<String>() {
-                Ok(s) => MysqlValueDecoded::String(s),
-                Err(_) => MysqlValueDecoded::Bytes(value.try_decode::<Vec<u8>>()?),
-            },
             "DECIMAL" => MysqlValueDecoded::Decimal(value.try_decode::<Decimal>()?),
-            "INT UNSIGNED" => MysqlValueDecoded::UInt(value.try_decode::<u32>()? as u64),
             "TIMESTAMP" | "DATETIME" => {
                 MysqlValueDecoded::DateTime(value.try_decode::<chrono::DateTime<Utc>>()?)
             }
-            "ENUM" => MysqlValueDecoded::String(value.try_decode::<String>()?),
-            name => Err(ValueError::InvalidType(name.to_string()))?,
+
+            // Binary data, never valid text: go straight to bytes.
+            "BINARY" | "VARBINARY" | "BLOB" | "TINYBLOB" | "MEDIUMBLOB" | "LONGBLOB" | "BIT"
+            | "GEOMETRY" => MysqlValueDecoded::Bytes(value.try_decode_unchecked::<Vec<u8>>()?),
+
+            // Text, plus the types without a dedicated variant that round trip fine as text:
+            // DATE/TIME/YEAR keep their MySQL literal form, JSON keeps its serialized form.
+            "CHAR" | "VARCHAR" | "TEXT" | "TINYTEXT" | "MEDIUMTEXT" | "LONGTEXT" | "ENUM"
+            | "SET" | "JSON" | "DATE" | "TIME" | "YEAR" => decode_text_or_bytes(&value)?,
+
+            // Never abort a whole table because of an unknown type.
+            name => {
+                tracing::warn!("unhandled MySQL type {}, migrating it as text/bytes", name);
+                decode_text_or_bytes(&value)?
+            }
         })
     }
 }
