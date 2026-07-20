@@ -283,7 +283,8 @@ async fn insert_batch_load_data(
                         .replace("\\", "\\\\")
                         .replace("\t", "\\t")
                         .replace("\n", "\\n")
-                        .replace("\r", "\\r");
+                        .replace("\r", "\\r")
+                        .replace("\0", "\\0");
 
                     write!(writer, "{}", escaped).map_err(|e| sqlx::Error::Io(e))?;
                 }
@@ -291,10 +292,18 @@ async fn insert_batch_load_data(
                     write!(writer, "{}", dt).map_err(|e| sqlx::Error::Io(e))?;
                 }
                 MysqlValueDecoded::Bytes(bytes) => {
-                    // Encode bytes as hex string for safe transport
-                    write!(writer, "0x").map_err(|e| sqlx::Error::Io(e))?;
+                    // Write raw bytes, escaped for MySQL LOAD DATA. A hex literal would not do:
+                    // LOAD DATA stores `0x4142` as that literal text, not as the bytes it spells.
                     for byte in bytes {
-                        write!(writer, "{:02x}", byte).map_err(|e| sqlx::Error::Io(e))?;
+                        match byte {
+                            b'\\' => writer.write_all(b"\\\\"),
+                            b'\t' => writer.write_all(b"\\t"),
+                            b'\n' => writer.write_all(b"\\n"),
+                            b'\r' => writer.write_all(b"\\r"),
+                            0 => writer.write_all(b"\\0"),
+                            b => writer.write_all(&[b]),
+                        }
+                        .map_err(|e| sqlx::Error::Io(e))?;
                     }
                 }
                 MysqlValueDecoded::Null => {
